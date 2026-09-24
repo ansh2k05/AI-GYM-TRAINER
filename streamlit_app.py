@@ -13,8 +13,10 @@ Run:
     streamlit run streamlit_app.py
 """
 
+import os
 import sys
 import time
+import tempfile
 import cv2
 import numpy as np
 import streamlit as st
@@ -601,14 +603,13 @@ def page_exercise():
                 _stop_tracking()
             st.rerun()
 
-        cam_index = st.number_input("Camera Index", min_value=0, max_value=5, value=0, step=1)
         target_reps = 10
 
         st.markdown("---")
         tracking = st.session_state.tracking
 
         if not tracking:
-            if st.button("▶ Start Tracking", width='stretch', type="primary"):
+            if st.button("▶ Start Camera Tracking", width='stretch', type="primary"):
                 # Initialise trackers
                 if ex_id == "curl":
                     st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
@@ -618,13 +619,33 @@ def page_exercise():
                 else:
                     st.session_state.tracker = ShoulderPressTracker(target_reps)
 
-                # Open webcam
-                cap = cv2.VideoCapture(int(cam_index))
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                if not cap.isOpened():
-                    st.error("❌ Cannot open webcam. Check camera index and permissions.")
+                # Directly open default camera (device 0)
+                cap = None
+                for dev in (0, 1):
+                    c = cv2.VideoCapture(dev)
+                    if c.isOpened():
+                        cap = c
+                        break
+                    c.release()
+
+                # On Windows, try DirectShow if default backend did not open
+                if (cap is None or not cap.isOpened()) and sys.platform.startswith("win"):
+                    c = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                    if c.isOpened():
+                        cap = c
+
+                if cap is None or not cap.isOpened():
+                    st.error("❌ Physical webcam not detected on the host server.")
+                    st.info(
+                        "ℹ️ **Running on Streamlit Cloud?**\n\n"
+                        "Cloud servers (AWS) do not have a physical webcam attached. "
+                        "To use your local laptop camera with real-time pose tracking, run the app locally:\n\n"
+                        "```bash\nstreamlit run streamlit_app.py\n```\n\n"
+                        "💡 **Or test directly right now** using the video upload option below!"
+                    )
                 else:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
                     # Open MediaPipe pose
                     pose = _MP.Pose(
                         min_detection_confidence=0.65,
@@ -636,6 +657,39 @@ def page_exercise():
                     st.session_state.tracking     = True
                     st.session_state.prev_elbows  = {"left": None, "right": None}
                     st.rerun()
+
+            # Upload video option (works both locally and in cloud)
+            with st.expander("📁 Or Test with a Workout Video (Works on Streamlit Cloud)"):
+                uploaded_video = st.file_uploader(
+                    "Upload workout video (MP4, MOV, AVI)",
+                    type=["mp4", "mov", "avi"],
+                    key=f"video_upload_{ex_id}"
+                )
+                if uploaded_video is not None:
+                    if st.button("▶ Analyze Uploaded Video", width='stretch', key=f"btn_analyze_{ex_id}"):
+                        if ex_id == "curl":
+                            st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
+                            st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
+                        elif ex_id == "pec_dec":
+                            st.session_state.tracker = PecDecTracker(target_reps)
+                        else:
+                            st.session_state.tracker = ShoulderPressTracker(target_reps)
+
+                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                        tfile.write(uploaded_video.read())
+                        tfile.close()
+
+                        cap = cv2.VideoCapture(tfile.name)
+                        pose = _MP.Pose(
+                            min_detection_confidence=0.65,
+                            min_tracking_confidence=0.65,
+                            model_complexity=1,
+                        )
+                        st.session_state.cap   = cap
+                        st.session_state.pose  = pose
+                        st.session_state.tracking     = True
+                        st.session_state.prev_elbows  = {"left": None, "right": None}
+                        st.rerun()
         else:
             # Live rep display with Battery Logo Widget
             reps = _get_reps_from_state()
@@ -670,11 +724,17 @@ def page_exercise():
             cap  = st.session_state.cap
             pose = st.session_state.pose
 
+            consecutive_empty = 0
             while st.session_state.tracking:
                 ok, frame = cap.read()
                 if not ok or frame is None:
+                    consecutive_empty += 1
+                    if consecutive_empty > 30:
+                        status_placeholder.info("Playback or stream completed. Click 'Stop & Save' above.")
+                        break
                     time.sleep(0.02)
                     continue
+                consecutive_empty = 0
 
                 # Process frame
                 if ex_id == "curl":
