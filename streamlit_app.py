@@ -595,6 +595,7 @@ def page_exercise():
             def __init__(self):
                 self.ex_id = "curl"
                 self.target_reps = 10
+                self.flip_horizontal = False
                 self.pose = _MP.Pose(min_detection_confidence=0.55, min_tracking_confidence=0.55, model_complexity=1)
                 self.left_tracker = ArmCurlTracker("LEFT", self.target_reps)
                 self.right_tracker = ArmCurlTracker("RIGHT", self.target_reps)
@@ -617,7 +618,8 @@ def page_exercise():
 
             def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
                 img_bgr = frame.to_ndarray(format="bgr24")
-                img_bgr = cv2.flip(img_bgr, 1)
+                if self.flip_horizontal:
+                    img_bgr = cv2.flip(img_bgr, 1)
 
                 if self.ex_id == "curl":
                     rgb_frame, self.prev_elbows = process_curl_frame(
@@ -751,6 +753,7 @@ def page_exercise():
             with tab_live:
                 st.markdown("### 🔴 Real-Time Live Pose Tracking")
                 st.caption("Streams live at 30 FPS with continuous MediaPipe skeleton overlays, joint angle arcs, and real-time rep counting.")
+                flip_cam = st.toggle("🪞 Reverse / Flip Camera Orientation", value=False, key="webrtc_mirror_toggle", help="Toggle if your webcam video feed appears reversed or mirrored")
                 if _HAS_WEBRTC:
                     webrtc_ctx = webrtc_streamer(
                         key=f"webrtc_live_{ex_id}",
@@ -762,6 +765,7 @@ def page_exercise():
 
                     if webrtc_ctx.video_processor:
                         webrtc_ctx.video_processor.set_exercise(ex_id)
+                        webrtc_ctx.video_processor.flip_horizontal = flip_cam
                         reps_detected = webrtc_ctx.video_processor.get_reps()
                         col_r1, col_r2 = st.columns([1, 1])
                         with col_r1:
@@ -781,12 +785,15 @@ def page_exercise():
 
             with tab_snapshot:
                 st.markdown("👉 **Align yourself in the frame and click 'Take Photo' below to run a static pose diagnosis!**")
+                flip_snap = st.toggle("🪞 Reverse / Flip Photo Orientation", value=False, key=f"snap_mirror_{ex_id}", help="Toggle if your photo appears reversed")
                 cam_img = st.camera_input("Open Camera & Capture Pose", key=f"cam_input_{ex_id}")
                 if cam_img is None:
                     st.info("💡 **Ready for Pose Check:** Get into position and click the **Take Photo** button above.")
                 if cam_img is not None:
                     bytes_data = cam_img.getvalue()
                     cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+                    if flip_snap:
+                        cv_img = cv2.flip(cv_img, 1)
 
                     # Initialise trackers
                     if ex_id == "curl":
