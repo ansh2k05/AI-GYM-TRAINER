@@ -21,6 +21,25 @@ import cv2
 import numpy as np
 import streamlit as st
 
+try:
+    import av
+    from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
+    _HAS_WEBRTC = True
+    RTC_CONFIGURATION = RTCConfiguration(
+        {
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+                {"urls": ["stun:stun2.l.google.com:19302"]},
+                {"urls": ["stun:stun3.l.google.com:19302"]},
+                {"urls": ["stun:stun4.l.google.com:19302"]},
+            ]
+        }
+    )
+except ImportError:
+    _HAS_WEBRTC = False
+    RTC_CONFIGURATION = None
+
 # UTF-8 fix for Windows console
 if sys.platform.startswith("win"):
     try:
@@ -571,6 +590,50 @@ def page_exercise():
     from pec_dec_fly import PecDecTracker
     from shoulder_press import ShoulderPressTracker
 
+    if _HAS_WEBRTC:
+        class GymVideoProcessor(VideoProcessorBase):
+            def __init__(self):
+                self.ex_id = "curl"
+                self.target_reps = 10
+                self.pose = _MP.Pose(min_detection_confidence=0.55, min_tracking_confidence=0.55, model_complexity=1)
+                self.left_tracker = ArmCurlTracker("LEFT", self.target_reps)
+                self.right_tracker = ArmCurlTracker("RIGHT", self.target_reps)
+                self.pec_tracker = PecDecTracker(self.target_reps)
+                self.shoulder_tracker = ShoulderPressTracker(self.target_reps)
+                self.prev_elbows = {"left": None, "right": None}
+
+            def set_exercise(self, current_ex_id: str):
+                if self.ex_id != current_ex_id:
+                    self.ex_id = current_ex_id
+                    self.prev_elbows = {"left": None, "right": None}
+
+            def get_reps(self) -> int:
+                if self.ex_id == "curl":
+                    return max(self.left_tracker.rep_count, self.right_tracker.rep_count)
+                elif self.ex_id == "pec_dec":
+                    return self.pec_tracker.rep_count
+                else:
+                    return self.shoulder_tracker.rep_count
+
+            def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+                img_bgr = frame.to_ndarray(format="bgr24")
+                img_bgr = cv2.flip(img_bgr, 1)
+
+                if self.ex_id == "curl":
+                    rgb_frame, self.prev_elbows = process_curl_frame(
+                        self.pose, img_bgr,
+                        self.left_tracker,
+                        self.right_tracker,
+                        self.prev_elbows,
+                    )
+                elif self.ex_id == "pec_dec":
+                    rgb_frame = process_pec_dec_frame(self.pose, img_bgr, self.pec_tracker)
+                else:
+                    rgb_frame = process_shoulder_press_frame(self.pose, img_bgr, self.shoulder_tracker)
+
+                bgr_out = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                return av.VideoFrame.from_ndarray(bgr_out, format="bgr24")
+
     exercise_info = {
         "curl":           {"name": "Dumbbell Curl",   "icon": "💪", "color": "#00c878", "key_tip": "Elbow flexion — shoulder→elbow→wrist"},
         "pec_dec":        {"name": "Pec Dec Fly",     "icon": "🦋", "color": "#00a5ff", "key_tip": "Join & cross hands in front of chest"},
@@ -679,17 +742,48 @@ def page_exercise():
                 time.sleep(0.02)   # ~30 fps cap
 
         else:
-            tab_browser, tab_video, tab_local = st.tabs([
-                "📷 Live Camera (Browser & Cloud)",
+            tab_live, tab_snapshot, tab_video = st.tabs([
+                "🔴 Continuous Live MediaPipe (30 FPS)",
+                "📸 Snapshot Pose Check",
                 "📁 Upload Workout Video",
-                "💻 Local Machine Stream"
             ])
 
-            with tab_browser:
-                st.markdown("👉 **Align yourself in the frame and click 'Take Photo' below to run live MediaPipe pose detection!**")
+            with tab_live:
+                st.markdown("### 🔴 Real-Time Live Pose Tracking")
+                st.caption("Streams live at 30 FPS with continuous MediaPipe skeleton overlays, joint angle arcs, and real-time rep counting.")
+                if _HAS_WEBRTC:
+                    webrtc_ctx = webrtc_streamer(
+                        key=f"webrtc_live_{ex_id}",
+                        rtc_configuration=RTC_CONFIGURATION,
+                        video_processor_factory=GymVideoProcessor,
+                        media_stream_constraints={"video": True, "audio": False},
+                        async_processing=True,
+                    )
+
+                    if webrtc_ctx.video_processor:
+                        webrtc_ctx.video_processor.set_exercise(ex_id)
+                        reps_detected = webrtc_ctx.video_processor.get_reps()
+                        col_r1, col_r2 = st.columns([1, 1])
+                        with col_r1:
+                            st.metric("Live Reps Detected", reps_detected)
+                        with col_r2:
+                            if st.button("💾 Save Reps to Today's Dashboard", key=f"btn_save_webrtc_{ex_id}", type="primary", width='stretch'):
+                                if reps_detected > 0:
+                                    record_exercise_reps(ex_id, reps_detected)
+                                    st.success(f"✅ Saved {reps_detected} reps for {ex_meta['name']}! Daily workout updated.")
+                                    time.sleep(1)
+                                    st.session_state.page = "dashboard"
+                                    st.rerun()
+                                else:
+                                    st.warning("Complete at least 1 rep before saving!")
+                else:
+                    st.info("WebRTC engine initializing... please refresh.")
+
+            with tab_snapshot:
+                st.markdown("👉 **Align yourself in the frame and click 'Take Photo' below to run a static pose diagnosis!**")
                 cam_img = st.camera_input("Open Camera & Capture Pose", key=f"cam_input_{ex_id}")
                 if cam_img is None:
-                    st.info("💡 **Ready for Pose Check:** Get into starting position and click the **Take Photo** button above to run MediaPipe.")
+                    st.info("💡 **Ready for Pose Check:** Get into position and click the **Take Photo** button above.")
                 if cam_img is not None:
                     bytes_data = cam_img.getvalue()
                     cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
@@ -757,43 +851,6 @@ def page_exercise():
                         tfile.close()
 
                         cap = cv2.VideoCapture(tfile.name)
-                        pose = _MP.Pose(min_detection_confidence=0.65, min_tracking_confidence=0.65, model_complexity=1)
-                        st.session_state.cap = cap
-                        st.session_state.pose = pose
-                        st.session_state.tracking = True
-                        st.session_state.prev_elbows = {"left": None, "right": None}
-                        st.rerun()
-
-            with tab_local:
-                st.caption("Continuous 30 FPS hardware webcam capture (use when running locally with `streamlit run streamlit_app.py`).")
-                if st.button("▶ Start Local Hardware Webcam", key=f"btn_local_{ex_id}", width='stretch'):
-                    if ex_id == "curl":
-                        st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
-                        st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
-                    elif ex_id == "pec_dec":
-                        st.session_state.tracker = PecDecTracker(target_reps)
-                    else:
-                        st.session_state.tracker = ShoulderPressTracker(target_reps)
-
-                    cap = None
-                    for dev in (0, 1):
-                        c = cv2.VideoCapture(dev)
-                        if c.isOpened():
-                            cap = c
-                            break
-                        c.release()
-
-                    if (cap is None or not cap.isOpened()) and sys.platform.startswith("win"):
-                        c = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-                        if c.isOpened():
-                            cap = c
-
-                    if cap is None or not cap.isOpened():
-                        st.error("No local webcam device found on this machine.")
-                        st.info("On Streamlit Cloud, please use the **📷 Live Camera (Browser & Cloud)** tab above!")
-                    else:
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
                         pose = _MP.Pose(min_detection_confidence=0.65, min_tracking_confidence=0.65, model_complexity=1)
                         st.session_state.cap = cap
                         st.session_state.pose = pose
