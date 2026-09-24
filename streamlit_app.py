@@ -604,106 +604,32 @@ def page_exercise():
             st.rerun()
 
         target_reps = 10
+        st.markdown("---")
+
+        # Today's Progress Card for this exercise
+        stats = load_daily_stats()
+        today_ex = stats.get("exercises", {}).get(ex_id, {})
+        reps_today = today_ex.get("reps", 0)
+
+        st.markdown(f"### Today's Goal: {reps_today} / {target_reps} Reps")
+        st.markdown(
+            render_battery_html(reps_today, target_reps, label=ex_meta["name"], size="card"),
+            unsafe_allow_html=True
+        )
 
         st.markdown("---")
-        tracking = st.session_state.tracking
-
-        if not tracking:
-            if st.button("▶ Start Camera Tracking", width='stretch', type="primary"):
-                # Initialise trackers
-                if ex_id == "curl":
-                    st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
-                    st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
-                elif ex_id == "pec_dec":
-                    st.session_state.tracker = PecDecTracker(target_reps)
-                else:
-                    st.session_state.tracker = ShoulderPressTracker(target_reps)
-
-                # Directly open default camera (device 0)
-                cap = None
-                for dev in (0, 1):
-                    c = cv2.VideoCapture(dev)
-                    if c.isOpened():
-                        cap = c
-                        break
-                    c.release()
-
-                # On Windows, try DirectShow if default backend did not open
-                if (cap is None or not cap.isOpened()) and sys.platform.startswith("win"):
-                    c = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-                    if c.isOpened():
-                        cap = c
-
-                if cap is None or not cap.isOpened():
-                    st.error("❌ Physical webcam not detected on the host server.")
-                    st.info(
-                        "ℹ️ **Running on Streamlit Cloud?**\n\n"
-                        "Cloud servers (AWS) do not have a physical webcam attached. "
-                        "To use your local laptop camera with real-time pose tracking, run the app locally:\n\n"
-                        "```bash\nstreamlit run streamlit_app.py\n```\n\n"
-                        "💡 **Or test directly right now** using the video upload option below!"
-                    )
-                else:
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                    # Open MediaPipe pose
-                    pose = _MP.Pose(
-                        min_detection_confidence=0.65,
-                        min_tracking_confidence=0.65,
-                        model_complexity=1,
-                    )
-                    st.session_state.cap   = cap
-                    st.session_state.pose  = pose
-                    st.session_state.tracking     = True
-                    st.session_state.prev_elbows  = {"left": None, "right": None}
-                    st.rerun()
-
-            # Upload video option (works both locally and in cloud)
-            with st.expander("📁 Or Test with a Workout Video (Works on Streamlit Cloud)"):
-                uploaded_video = st.file_uploader(
-                    "Upload workout video (MP4, MOV, AVI)",
-                    type=["mp4", "mov", "avi"],
-                    key=f"video_upload_{ex_id}"
-                )
-                if uploaded_video is not None:
-                    if st.button("▶ Analyze Uploaded Video", width='stretch', key=f"btn_analyze_{ex_id}"):
-                        if ex_id == "curl":
-                            st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
-                            st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
-                        elif ex_id == "pec_dec":
-                            st.session_state.tracker = PecDecTracker(target_reps)
-                        else:
-                            st.session_state.tracker = ShoulderPressTracker(target_reps)
-
-                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                        tfile.write(uploaded_video.read())
-                        tfile.close()
-
-                        cap = cv2.VideoCapture(tfile.name)
-                        pose = _MP.Pose(
-                            min_detection_confidence=0.65,
-                            min_tracking_confidence=0.65,
-                            model_complexity=1,
-                        )
-                        st.session_state.cap   = cap
-                        st.session_state.pose  = pose
-                        st.session_state.tracking     = True
-                        st.session_state.prev_elbows  = {"left": None, "right": None}
-                        st.rerun()
+        st.markdown("#### 💡 Form & Technique Tips")
+        if ex_id == "curl":
+            st.info("• Keep upper arms fixed to torso\n• Curl until forearm reaches ~30°\n• Lower under control to ~160°")
+        elif ex_id == "pec_dec":
+            st.info("• Keep elbows parallel to shoulders\n• Bring hands together across chest center\n• Squeeze pecs for 0.5s at peak contraction")
         else:
-            # Live rep display with Battery Logo Widget
-            reps = _get_reps_from_state()
-            st.metric("Reps Counted", reps, delta=None)
-            st.markdown(
-                render_battery_html(reps, target_reps, label=ex_meta["name"], size="card"),
-                unsafe_allow_html=True
-            )
-            if reps >= target_reps:
-                st.success("🏆 Target Reached!")
+            st.info("• Start with weights at ear level\n• Press overhead to near-lockout (~165°)\n• Keep core tight and avoid lower back arch")
 
+        if st.session_state.tracking:
             with st.container():
                 st.markdown('<div class="stop-btn">', unsafe_allow_html=True)
-                stop_pressed = st.button("⏹ Stop & Save", width='stretch')
+                stop_pressed = st.button("⏹ Stop & Save Session", width='stretch', type="primary")
                 st.markdown('</div>', unsafe_allow_html=True)
 
             if stop_pressed:
@@ -730,7 +656,7 @@ def page_exercise():
                 if not ok or frame is None:
                     consecutive_empty += 1
                     if consecutive_empty > 30:
-                        status_placeholder.info("Playback or stream completed. Click 'Stop & Save' above.")
+                        status_placeholder.info("Playback or stream completed. Click 'Stop & Save Session' on the left.")
                         break
                     time.sleep(0.02)
                     continue
@@ -753,16 +679,125 @@ def page_exercise():
                 time.sleep(0.02)   # ~30 fps cap
 
         else:
-            st.info("👆 Select an exercise and press **Start Tracking** to begin.")
-            # Show placeholder camera preview
-            st.markdown(
-                '<div style="text-align:center;padding:4rem;background:rgba(255,255,255,0.02);'
-                'border:1.5px dashed rgba(255,255,255,0.12);border-radius:18px;">'
-                '<span style="font-size:4rem">📷</span><br>'
-                '<p style="color:#9098b8;margin-top:1rem">Webcam feed will appear here</p>'
-                '</div>',
-                unsafe_allow_html=True
-            )
+            tab_browser, tab_video, tab_local = st.tabs([
+                "📷 Live Camera (Browser & Cloud)",
+                "📁 Upload Workout Video",
+                "💻 Local Machine Stream"
+            ])
+
+            with tab_browser:
+                st.caption("Directly accesses your camera through the browser. Works on Streamlit Cloud, Laptops & Mobile.")
+                cam_img = st.camera_input("Open Camera & Capture Pose", key=f"cam_input_{ex_id}")
+                if cam_img is not None:
+                    bytes_data = cam_img.getvalue()
+                    cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+                    # Initialise trackers
+                    if ex_id == "curl":
+                        if st.session_state.left_tracker is None:
+                            st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
+                            st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
+                    elif ex_id == "pec_dec":
+                        if st.session_state.tracker is None:
+                            st.session_state.tracker = PecDecTracker(target_reps)
+                    else:
+                        if st.session_state.tracker is None:
+                            st.session_state.tracker = ShoulderPressTracker(target_reps)
+
+                    pose = _MP.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6, model_complexity=1)
+                    if ex_id == "curl":
+                        rgb_frame, st.session_state.prev_elbows = process_curl_frame(
+                            pose, cv_img,
+                            st.session_state.left_tracker,
+                            st.session_state.right_tracker,
+                            st.session_state.prev_elbows,
+                        )
+                    elif ex_id == "pec_dec":
+                        rgb_frame = process_pec_dec_frame(pose, cv_img, st.session_state.tracker)
+                    else:
+                        rgb_frame = process_shoulder_press_frame(pose, cv_img, st.session_state.tracker)
+                    pose.close()
+
+                    st.image(rgb_frame, channels="RGB", caption="Biomechanical Analysis Overlay", width='stretch')
+                    reps_counted = _get_reps_from_state()
+
+                    c_rep1, c_rep2 = st.columns([1, 1])
+                    with c_rep1:
+                        st.metric("Session Reps", reps_counted)
+                    with c_rep2:
+                        if st.button("💾 Save Reps to Today's Tracker", key=f"btn_save_cam_{ex_id}", type="primary", width='stretch'):
+                            to_log = max(1, reps_counted)
+                            record_exercise_reps(ex_id, to_log)
+                            st.success(f"✅ Saved {to_log} reps to today's workout!")
+                            time.sleep(1)
+                            st.session_state.page = "dashboard"
+                            st.rerun()
+
+            with tab_video:
+                st.caption("Upload a recorded exercise video clip (MP4, MOV, AVI) to analyze form and count reps.")
+                uploaded_video = st.file_uploader(
+                    "Select workout video",
+                    type=["mp4", "mov", "avi"],
+                    key=f"video_up_{ex_id}"
+                )
+                if uploaded_video is not None:
+                    if st.button("▶ Run AI Rep Analysis", key=f"btn_vid_{ex_id}", type="primary", width='stretch'):
+                        if ex_id == "curl":
+                            st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
+                            st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
+                        elif ex_id == "pec_dec":
+                            st.session_state.tracker = PecDecTracker(target_reps)
+                        else:
+                            st.session_state.tracker = ShoulderPressTracker(target_reps)
+
+                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                        tfile.write(uploaded_video.read())
+                        tfile.close()
+
+                        cap = cv2.VideoCapture(tfile.name)
+                        pose = _MP.Pose(min_detection_confidence=0.65, min_tracking_confidence=0.65, model_complexity=1)
+                        st.session_state.cap = cap
+                        st.session_state.pose = pose
+                        st.session_state.tracking = True
+                        st.session_state.prev_elbows = {"left": None, "right": None}
+                        st.rerun()
+
+            with tab_local:
+                st.caption("Continuous 30 FPS hardware webcam capture (use when running locally with `streamlit run streamlit_app.py`).")
+                if st.button("▶ Start Local Hardware Webcam", key=f"btn_local_{ex_id}", width='stretch'):
+                    if ex_id == "curl":
+                        st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
+                        st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
+                    elif ex_id == "pec_dec":
+                        st.session_state.tracker = PecDecTracker(target_reps)
+                    else:
+                        st.session_state.tracker = ShoulderPressTracker(target_reps)
+
+                    cap = None
+                    for dev in (0, 1):
+                        c = cv2.VideoCapture(dev)
+                        if c.isOpened():
+                            cap = c
+                            break
+                        c.release()
+
+                    if (cap is None or not cap.isOpened()) and sys.platform.startswith("win"):
+                        c = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                        if c.isOpened():
+                            cap = c
+
+                    if cap is None or not cap.isOpened():
+                        st.error("No local webcam device found on this machine.")
+                        st.info("On Streamlit Cloud, please use the **📷 Live Camera (Browser & Cloud)** tab above!")
+                    else:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        pose = _MP.Pose(min_detection_confidence=0.65, min_tracking_confidence=0.65, model_complexity=1)
+                        st.session_state.cap = cap
+                        st.session_state.pose = pose
+                        st.session_state.tracking = True
+                        st.session_state.prev_elbows = {"left": None, "right": None}
+                        st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════
