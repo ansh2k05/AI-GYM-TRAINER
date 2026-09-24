@@ -686,8 +686,10 @@ def page_exercise():
             ])
 
             with tab_browser:
-                st.caption("Directly accesses your camera through the browser. Works on Streamlit Cloud, Laptops & Mobile.")
+                st.markdown("👉 **Align yourself in the frame and click 'Take Photo' below to run live MediaPipe pose detection!**")
                 cam_img = st.camera_input("Open Camera & Capture Pose", key=f"cam_input_{ex_id}")
+                if cam_img is None:
+                    st.info("💡 **Ready for Pose Check:** Get into starting position and click the **Take Photo** button above to run MediaPipe.")
                 if cam_img is not None:
                     bytes_data = cam_img.getvalue()
                     cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
