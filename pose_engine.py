@@ -30,8 +30,12 @@ from hud_ui import draw_battery_rep_dashboard
 # ─────────────────────────────────────────────
 #  MediaPipe shared setup
 # ─────────────────────────────────────────────
-_MP  = mp.solutions.pose
-_DRW = mp.solutions.drawing_utils
+try:
+    _MP  = mp.solutions.pose
+    _DRW = mp.solutions.drawing_utils
+except AttributeError:
+    import mediapipe.python.solutions.pose as _MP
+    import mediapipe.python.solutions.drawing_utils as _DRW
 
 # Landmark style constants
 _LM_STYLE_GREEN  = _DRW.DrawingSpec(color=(0, 200, 120),  thickness=2, circle_radius=4)

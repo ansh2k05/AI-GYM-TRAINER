@@ -408,8 +408,12 @@ def run(camera_index: int = 0) -> dict:
     import time
     import mediapipe as mp
 
-    _MP  = mp.solutions.pose
-    _DRW = mp.solutions.drawing_utils
+    try:
+        _MP  = mp.solutions.pose
+        _DRW = mp.solutions.drawing_utils
+    except AttributeError:
+        import mediapipe.python.solutions.pose as _MP
+        import mediapipe.python.solutions.drawing_utils as _DRW
 
     L_SHOULDER = _MP.PoseLandmark.LEFT_SHOULDER.value
     L_ELBOW    = _MP.PoseLandmark.LEFT_ELBOW.value

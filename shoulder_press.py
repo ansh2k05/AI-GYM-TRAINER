@@ -39,8 +39,12 @@ from goku_effect import play_goku_ui_video_effect
 # ─────────────────────────────────────────────
 #  Landmark indices
 # ─────────────────────────────────────────────
-_MP  = mp.solutions.pose
-_DRW = mp.solutions.drawing_utils
+try:
+    _MP  = mp.solutions.pose
+    _DRW = mp.solutions.drawing_utils
+except AttributeError:
+    import mediapipe.python.solutions.pose as _MP
+    import mediapipe.python.solutions.drawing_utils as _DRW
 
 L_SHOULDER = _MP.PoseLandmark.LEFT_SHOULDER.value
 R_SHOULDER = _MP.PoseLandmark.RIGHT_SHOULDER.value
