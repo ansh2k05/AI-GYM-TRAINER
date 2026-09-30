@@ -78,14 +78,21 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 ## 🎮 Running the Application
 
-### Option A: Streamlit Web App (Recommended)
-Launch the browser-based dashboard:
+### Option A: Ultra-Fast Live Vision Web Suite (Best Performance)
+Launch the Starlette + Uvicorn high-FPS browser interface:
+```bash
+python web_app.py
+```
+Open [http://localhost:8000](http://localhost:8000) in your browser. (Instant 30+ FPS, zero WebRTC/permission latency, real-time rep tracker, and interactive Gemini Coach).
+
+### Option B: Streamlit Web Dashboard
+Launch the Streamlit interface:
 ```bash
 streamlit run streamlit_app.py
 ```
 Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-### Option B: Desktop OpenCV Mode
+### Option C: Desktop OpenCV Mode
 Run the standalone desktop HUD:
 ```bash
 python main.py

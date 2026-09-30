@@ -115,6 +115,7 @@ def process_curl_frame(
     annotated_rgb  : np.ndarray  RGB image ready for st.image
     prev_elbows    : dict with 'left' and 'right' updated elbow positions
     """
+    frame = frame.copy()
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     rgb.flags.writeable = False
     results = pose.process(rgb)
@@ -195,6 +196,7 @@ def process_pec_dec_frame(
     tracker: PecDecTracker,
 ) -> np.ndarray:
     """Process one BGR frame for Pec Dec Fly. Returns annotated RGB frame."""
+    frame = frame.copy()
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     rgb.flags.writeable = False
     results = pose.process(rgb)
@@ -211,8 +213,13 @@ def process_pec_dec_frame(
         _DRW.draw_landmarks(frame, mirrored, _MP.POSE_CONNECTIONS,
                             _LM_STYLE_ORANGE, _CON_STYLE)
 
-        needed = [L_SHOULDER, R_SHOULDER, L_ELBOW, R_ELBOW, L_WRIST, R_WRIST]
-        if check_visibility(lms, needed, 0.50):
+        # Ensure shoulders are detected and upper limbs (elbows or wrists) are tracked
+        shoulders_vis = (lms[L_SHOULDER].visibility >= 0.35 and lms[R_SHOULDER].visibility >= 0.35)
+        limbs_vis = (
+            (lms[L_ELBOW].visibility >= 0.25 and lms[R_ELBOW].visibility >= 0.25) or
+            (lms[L_WRIST].visibility >= 0.20 and lms[R_WRIST].visibility >= 0.20)
+        )
+        if shoulders_vis and limbs_vis:
             tracker.mark_visible()
             ls = get_landmark_coords(lms, L_SHOULDER, frame.shape, mirror=True)
             rs = get_landmark_coords(lms, R_SHOULDER, frame.shape, mirror=True)
@@ -221,15 +228,16 @@ def process_pec_dec_frame(
             lw = get_landmark_coords(lms, L_WRIST,    frame.shape, mirror=True)
             rw = get_landmark_coords(lms, R_WRIST,    frame.shape, mirror=True)
 
-            l_angle = calculate_angle(ls, le, lw)
-            r_angle = calculate_angle(rs, re, rw)
-            tracker.update(l_angle, r_angle, lw, rw, ls, rs)
+            l_angle = calculate_angle(le, ls, rs)
+            r_angle = calculate_angle(re, rs, ls)
+            tracker.update(l_angle, r_angle, lw, rw, ls, rs, le, re)
 
             # Hand distance visualisation
             cx = int((lw[0] + rw[0]) / 2)
             cy = int((lw[1] + rw[1]) / 2)
-            cv2.line(frame, tuple(lw), tuple(rw), (0, 165, 255), 2)
-            cv2.circle(frame, (cx, cy), 8, (0, 215, 120), -1)
+            line_clr = (0, 215, 255) if tracker.hands_crossed else ((0, 215, 120) if tracker.hands_joined else (0, 165, 255))
+            cv2.line(frame, tuple(lw), tuple(rw), line_clr, 2)
+            cv2.circle(frame, (cx, cy), 8, (0, 215, 120) if tracker.hands_joined else (0, 165, 255), -1)
         else:
             tracker.mark_invisible()
     else:
@@ -258,6 +266,7 @@ def process_shoulder_press_frame(
     """Process one BGR frame for Shoulder Press. Returns annotated RGB frame."""
     CLR_CYAN = (255, 185, 30)
 
+    frame = frame.copy()
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     rgb.flags.writeable = False
     results = pose.process(rgb)

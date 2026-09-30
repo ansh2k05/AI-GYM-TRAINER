@@ -63,11 +63,11 @@ class PecDecTracker:
     Bilateral Pec Dec / Chest Fly rep tracker with 10-rep target goal.
     """
 
-    RATIO_SPLIT = 0.75   # hand distance / shoulder width when arms open
-    RATIO_JOIN  = 0.35   # hand distance / shoulder width when hands join
+    RATIO_SPLIT = 0.70   # hand distance / shoulder width when arms open wide
+    RATIO_JOIN  = 0.48   # hand distance / shoulder width when hands meet
 
-    SMOOTH_WINDOW   = 5
-    MIN_HOLD_FRAMES = 2   # consecutive frames to confirm state transition
+    SMOOTH_WINDOW   = 3   # 3-frame responsive smoothing window
+    MIN_HOLD_FRAMES = 2   # 2 consecutive frames to confirm state transition
 
     def __init__(self, target_reps: int = DEFAULT_TARGET_REPS):
         self.target_reps      = target_reps
@@ -81,8 +81,9 @@ class PecDecTracker:
         self.hand_ratio       = 1.0
         self.hands_crossed    = False
         self.hands_joined     = False
-        self.feedback         = "Split arms open to begin"
+        self.feedback         = "Raise arms to chest level to begin"
         self.visible          = True
+        self._invisible_frames = 0
         self._first_rep_armed = False
 
         self._ratio_buf  = deque(maxlen=self.SMOOTH_WINDOW)
@@ -96,14 +97,18 @@ class PecDecTracker:
     @property
     def progress_pct(self) -> float:
         """Calculate real-time 0.0 -> 1.0 rep completion percentage."""
+        if not self._first_rep_armed:
+            return 0.0
         if self.stage == "split":
-            pct = (0.85 - self.hand_ratio) / (0.85 - 0.32)
+            pct = (self.RATIO_SPLIT - self.hand_ratio) / max(self.RATIO_SPLIT - self.RATIO_JOIN, 0.01)
         else:
             pct = 1.0
         return max(0.0, min(pct, 1.0))
 
     def update(self, l_raw: float, r_raw: float,
-               lw: list, rw: list, ls: list, rs: list):
+               lw: list, rw: list, ls: list, rs: list,
+               le: list = None, re: list = None):
+        self.mark_visible()
         self.left_angle  = l_raw
         self.right_angle = r_raw
 
@@ -121,26 +126,71 @@ class PecDecTracker:
         ratio = float(np.mean(self._ratio_buf))
         self.hand_ratio = ratio
 
-        crossed = (rw[0] >= lw[0] - 25)
+        if le is not None and re is not None:
+            raw_elbow_dist = float(np.hypot(le[0] - re[0], le[1] - re[1]))
+            elbow_ratio    = raw_elbow_dist / self.shoulder_dist
+        else:
+            elbow_ratio    = 1.0
+
+        # ── 1. Position Check: Ensure user is actively in fly position (not hands at waist) ──
+        # When arms are resting/hanging at sides, wrists are down at waist level (>1.15 * shoulder_dist below shoulders)
+        hands_hanging_down = (
+            lw[1] > ls[1] + 1.15 * self.shoulder_dist and
+            rw[1] > rs[1] + 1.15 * self.shoulder_dist
+        )
+        if hands_hanging_down:
+            self.hands_crossed    = False
+            self.hands_joined     = False
+            self._close_hold      = 0
+            self._open_hold       = 0
+            self._first_rep_armed = False
+            self.stage            = "split"
+            self.feedback         = "Raise arms to chest level to begin"
+            return
+
+        # ── 2. Bilateral Crossover & Joining Detection ────────────────────
+        is_mirrored = (ls[0] < rs[0])
+        crossover = (lw[0] - rw[0]) if is_mirrored else (rw[0] - lw[0])
+
+        # True crossover: hands cross past each other across chest center
+        crossed = (
+            (crossover > 10) and
+            (raw_hand_dist < 0.65 * self.shoulder_dist)
+        )
         self.hands_crossed = crossed
 
-        joined = crossed or (ratio < self.RATIO_JOIN) or (raw_hand_dist < 55) or (self.avg_angle < 65.0)
+        # Joined: hands close together, crossed, OR elbows brought together in front of chest
+        joined = (
+            crossed or
+            (ratio <= self.RATIO_JOIN) or
+            (elbow_ratio <= 0.80) or
+            (self.avg_angle <= 80.0 and (ratio <= 0.60 or elbow_ratio <= 0.95))
+        )
         self.hands_joined = joined
 
-        split = (ratio > self.RATIO_SPLIT) or (self.avg_angle > 88.0)
+        # Split: arms opened wide (wide hand separation, wide elbow separation, or wide arm angle)
+        split = (
+            (ratio >= self.RATIO_SPLIT) or
+            (elbow_ratio >= 1.15) or
+            (self.avg_angle >= 110.0)
+        )
 
-        # First rep arming
+        # ── 3. First Rep Arming ───────────────────────────────────────────
+        # User must spread arms wide at chest level to arm the first rep
         if not self._first_rep_armed:
             if split:
-                self._first_rep_armed = True
-                self.stage    = "split"
-                self.feedback = "Bring hands together & cross!"
+                self._open_hold += 1
+                if self._open_hold >= self.MIN_HOLD_FRAMES:
+                    self._first_rep_armed = True
+                    self.stage            = "split"
+                    self._open_hold       = 0
+                    self.feedback         = "Ready! Bring hands together across chest"
             else:
-                self.stage    = "joined"
-                self.feedback = "Split arms wide to start"
-                return
+                self._open_hold = 0
+                self.feedback   = "Spread arms wide to start"
+            return
 
-        # Hold counters
+        # ── 4. Hold Counters & State Transitions ─────────────────────────
         if joined:
             self._close_hold += 1
             self._open_hold   = 0
@@ -151,23 +201,24 @@ class PecDecTracker:
             self._close_hold = 0
             self._open_hold  = 0
 
-        # Rep counts when both hands join and cross together!
+        # Rep completion: arms were split -> brought hands together and held
         if self._close_hold >= self.MIN_HOLD_FRAMES and self.stage == "split":
             self.rep_count  += 1
             self.stage       = "joined"
             self._close_hold = 0
             self.session.on_rep_completed(self.rep_count)
 
-            if crossed:
+            if self.hands_crossed:
                 self.feedback = "Hands crossed! Rep counted \u2713"
             else:
-                self.feedback = "Hands joined! Rep counted \u2713"
+                self.feedback = "Pec squeeze! Rep counted \u2713"
             return
 
+        # Re-arming next rep: arms were joined -> split open wide and held
         if self._open_hold >= self.MIN_HOLD_FRAMES and self.stage == "joined":
             self.stage      = "split"
             self._open_hold = 0
-            self.feedback   = "Arms split – Bring hands together!"
+            self.feedback   = "Arms split \u2013 Squeeze hands together!"
             return
 
         self._evaluate_form(joined, split)
@@ -177,7 +228,7 @@ class PecDecTracker:
             if self._close_hold > 0:
                 self.feedback = "Joining hands..."
             elif self.hand_ratio < 0.55:
-                self.feedback = "Squeeze closer to cross hands!"
+                self.feedback = "Squeeze closer to complete rep!"
             else:
                 if self.rep_count >= self.target_reps:
                     self.feedback = "Target 10 Reps Reached! \u2605"
@@ -192,25 +243,30 @@ class PecDecTracker:
                 self.feedback = "Hands joined! Now split open \u2713"
 
     def mark_invisible(self):
-        self.visible     = False
-        self._close_hold = 0
-        self._open_hold  = 0
-        self.feedback    = "Chest & arms not visible"
+        self._invisible_frames += 1
+        # 4-frame grace period so momentary occlusion when hands cross doesn't wipe progress
+        if self._invisible_frames >= 4:
+            self.visible     = False
+            self._close_hold = 0
+            self._open_hold  = 0
+            self.feedback    = "Step back slightly — keep arms in view"
 
     def mark_visible(self):
-        self.visible = True
+        self.visible           = True
+        self._invisible_frames = 0
 
     def reset(self):
-        self.rep_count        = 0
-        self.stage            = "split"
-        self.feedback         = "Split arms open to begin"
-        self.hands_crossed    = False
-        self.hands_joined     = False
+        self.rep_count         = 0
+        self.stage             = "split"
+        self.feedback          = "Raise arms to chest level to begin"
+        self.hands_crossed     = False
+        self.hands_joined      = False
         self._ratio_buf.clear()
         self._angle_buf.clear()
-        self._close_hold      = 0
-        self._open_hold       = 0
-        self._first_rep_armed = False
+        self._close_hold       = 0
+        self._open_hold        = 0
+        self._invisible_frames = 0
+        self._first_rep_armed  = False
         self.session.reset()
 
 
@@ -380,8 +436,12 @@ def run(camera_index: int = 0) -> dict:
                 _DRW.draw_landmarks(frame, mirrored, _MP.POSE_CONNECTIONS,
                                     _LM_STYLE, _CON_STYLE)
 
-                needed = [L_SHOULDER, R_SHOULDER, L_ELBOW, R_ELBOW, L_WRIST, R_WRIST]
-                if check_visibility(lms, needed, VISIBILITY_THRESH):
+                shoulders_vis = (lms[L_SHOULDER].visibility >= 0.35 and lms[R_SHOULDER].visibility >= 0.35)
+                limbs_vis = (
+                    (lms[L_ELBOW].visibility >= 0.25 and lms[R_ELBOW].visibility >= 0.25) or
+                    (lms[L_WRIST].visibility >= 0.20 and lms[R_WRIST].visibility >= 0.20)
+                )
+                if shoulders_vis and limbs_vis:
                     tracker.mark_visible()
 
                     ls = get_landmark_coords(lms, L_SHOULDER, frame.shape, mirror=True)
@@ -394,7 +454,7 @@ def run(camera_index: int = 0) -> dict:
                     l_angle = calculate_angle(le, ls, rs)
                     r_angle = calculate_angle(re, rs, ls)
 
-                    tracker.update(l_angle, r_angle, lw, rw, ls, rs)
+                    tracker.update(l_angle, r_angle, lw, rw, ls, rs, le, re)
 
                     # Live status banner
                     if tracker.hands_crossed:

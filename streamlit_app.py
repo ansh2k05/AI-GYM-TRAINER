@@ -709,6 +709,18 @@ def page_exercise():
     # Webcam frame display
     with col_cam:
         if st.session_state.tracking:
+            c_top_stop, c_top_info = st.columns([1, 2])
+            with c_top_stop:
+                if st.button("⏹ Stop & Save Session", key="top_stop_btn_cam", type="primary", width="stretch"):
+                    reps_to_save = _get_reps_from_state()
+                    _stop_tracking()
+                    if reps_to_save > 0:
+                        record_exercise_reps(ex_id, reps_to_save)
+                    st.session_state.page = "dashboard"
+                    st.rerun()
+            with c_top_info:
+                st.caption("🔴 **Live Workout Tracking Active** — perform repetitions facing your camera.")
+
             frame_placeholder = st.empty()
             status_placeholder = st.empty()
 
@@ -718,10 +730,10 @@ def page_exercise():
             consecutive_empty = 0
             while st.session_state.tracking:
                 ok, frame = cap.read()
-                if not ok or frame is None:
+                if not ok or frame is None or np.mean(frame) < 2.0:
                     consecutive_empty += 1
-                    if consecutive_empty > 30:
-                        status_placeholder.info("Playback or stream completed. Click 'Stop & Save Session' on the left.")
+                    if consecutive_empty > 50:
+                        status_placeholder.warning("⚠️ Camera stream ended, disconnected, or returned dark frames. Ensure no other application is accessing the camera, then click 'Stop & Save Session'.")
                         break
                     time.sleep(0.02)
                     continue
@@ -752,48 +764,88 @@ def page_exercise():
 
             with tab_live:
                 st.markdown("### 🔴 Real-Time Live Pose Tracking")
-                st.caption("Streams live at 30 FPS with continuous MediaPipe skeleton overlays, joint angle arcs, and real-time rep counting.")
-                flip_cam = st.toggle("🪞 Reverse / Flip Camera Orientation", value=False, key="webrtc_mirror_toggle", help="Toggle if your webcam video feed appears reversed or mirrored")
-                if _HAS_WEBRTC:
-                    webrtc_ctx = webrtc_streamer(
-                        key=f"webrtc_live_{ex_id}",
-                        rtc_configuration=RTC_CONFIGURATION,
-                        video_processor_factory=GymVideoProcessor,
-                        media_stream_constraints={"video": True, "audio": False},
-                        async_processing=True,
-                    )
+                st.caption("Direct hardware webcam streaming with live MediaPipe 33-point biomechanics analysis (30+ FPS).")
 
-                    if webrtc_ctx.video_processor:
-                        webrtc_ctx.video_processor.set_exercise(ex_id)
-                        webrtc_ctx.video_processor.flip_horizontal = flip_cam
-                        reps_detected = webrtc_ctx.video_processor.get_reps()
-                        col_r1, col_r2 = st.columns([1, 1])
-                        with col_r1:
-                            st.metric("Live Reps Detected", reps_detected)
-                        with col_r2:
-                            if st.button("💾 Save Reps to Today's Dashboard", key=f"btn_save_webrtc_{ex_id}", type="primary", width='stretch'):
-                                if reps_detected > 0:
-                                    record_exercise_reps(ex_id, reps_detected)
-                                    st.success(f"✅ Saved {reps_detected} reps for {ex_meta['name']}! Daily workout updated.")
-                                    time.sleep(1)
-                                    st.session_state.page = "dashboard"
-                                    st.rerun()
-                                else:
-                                    st.warning("Complete at least 1 rep before saving!")
-                else:
-                    st.info("WebRTC engine initializing... please refresh.")
+                c_btn, c_dev = st.columns([3, 1])
+                with c_dev:
+                    cam_idx = st.selectbox("Camera Device", options=[0, 1, 2], index=0, key=f"cam_idx_sel_{ex_id}", help="Device 0 is your default/built-in webcam.")
+                with c_btn:
+                    st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+                    if st.button("▶ Start Live Camera Tracking", key=f"btn_start_native_cam_{ex_id}", type="primary", width='stretch'):
+                        if sys.platform.startswith("win"):
+                            cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+                            if not cap.isOpened():
+                                cap = cv2.VideoCapture(cam_idx)
+                        else:
+                            cap = cv2.VideoCapture(cam_idx)
+
+                        # Test read to verify camera actually delivers frames
+                        ok_test = False
+                        if cap.isOpened():
+                            for _ in range(10):
+                                ok_test, f_test = cap.read()
+                                if ok_test and f_test is not None and np.mean(f_test) > 5.0:
+                                    ok_test = True
+                                    break
+                                time.sleep(0.05)
+
+                        if not cap.isOpened() or not ok_test:
+                            if cap.isOpened():
+                                try:
+                                    cap.release()
+                                except Exception:
+                                    pass
+                            st.error(f"❌ Could not access Camera Device {cam_idx}. Check if another application (e.g. Zoom, Teams, or another window) is using the camera, or select Device 1.")
+                        else:
+                            if ex_id == "curl":
+                                st.session_state.left_tracker  = ArmCurlTracker("LEFT",  target_reps)
+                                st.session_state.right_tracker = ArmCurlTracker("RIGHT", target_reps)
+                            elif ex_id == "pec_dec":
+                                st.session_state.tracker = PecDecTracker(target_reps)
+                            else:
+                                st.session_state.tracker = ShoulderPressTracker(target_reps)
+
+                            pose = _MP.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6, model_complexity=1)
+                            st.session_state.cap = cap
+                            st.session_state.pose = pose
+                            st.session_state.tracking = True
+                            st.session_state.prev_elbows = {"left": None, "right": None}
+                            st.rerun()
 
             with tab_snapshot:
-                st.markdown("👉 **Align yourself in the frame and click 'Take Photo' below to run a static pose diagnosis!**")
-                flip_snap = st.toggle("🪞 Reverse / Flip Photo Orientation", value=False, key=f"snap_mirror_{ex_id}", help="Toggle if your photo appears reversed")
-                cam_img = st.camera_input("Open Camera & Capture Pose", key=f"cam_input_{ex_id}")
-                if cam_img is None:
-                    st.info("💡 **Ready for Pose Check:** Get into position and click the **Take Photo** button above.")
-                if cam_img is not None:
-                    bytes_data = cam_img.getvalue()
-                    cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-                    if flip_snap:
-                        cv_img = cv2.flip(cv_img, 1)
+                st.markdown("👉 **Capture a snapshot from your webcam or upload a photo to run an instant biomechanical diagnosis!**")
+                c_snap_btn, c_snap_file = st.columns([1, 1])
+
+                captured_img = None
+                with c_snap_btn:
+                    if st.button("📸 Capture Pose from Webcam", key=f"btn_snap_direct_{ex_id}", type="primary", width="stretch"):
+                        s_cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY)
+                        if s_cap.isOpened():
+                            for _ in range(8):
+                                r_ok, s_f = s_cap.read()
+                                if r_ok and s_f is not None and np.mean(s_f) > 10.0:
+                                    captured_img = s_f
+                                    break
+                                time.sleep(0.04)
+                            s_cap.release()
+                            if captured_img is not None:
+                                st.session_state[f"snap_data_{ex_id}"] = captured_img
+                            else:
+                                st.error("❌ Webcam captured a dark or empty frame. Please ensure camera lens is uncovered.")
+                        else:
+                            st.error(f"❌ Could not open Camera Device {cam_idx}.")
+
+                with c_snap_file:
+                    snap_file = st.file_uploader("Or upload pose photo", type=["jpg", "jpeg", "png"], key=f"snap_file_{ex_id}")
+                    if snap_file is not None:
+                        bytes_data = snap_file.getvalue()
+                        f_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+                        if f_img is not None:
+                            st.session_state[f"snap_data_{ex_id}"] = f_img
+
+                active_snap = st.session_state.get(f"snap_data_{ex_id}")
+                if active_snap is not None:
+                    cv_img = active_snap.copy()
 
                     # Initialise trackers
                     if ex_id == "curl":

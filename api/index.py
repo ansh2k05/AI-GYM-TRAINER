@@ -1,11 +1,9 @@
-"""
-main.py — Main Entrypoint & Vercel ASGI Application Export
-==========================================================
-"""
+import os
 import sys
-from app import main
 
-# Export top-level application handlers for Vercel deployment
+# Ensure parent directory is in sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 try:
     from web_app import app as _starlette_app
     app = _starlette_app
@@ -22,6 +20,3 @@ except Exception:
 
 application = app
 handler = app
-
-if __name__ == "__main__":
-    main()
